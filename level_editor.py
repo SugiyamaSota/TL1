@@ -1,4 +1,5 @@
 import bpy
+import math
 
 #
 
@@ -46,6 +47,39 @@ class MYADDON_OT_create_ico_sphere(bpy.types.Operator):
         #
         return {'FINISHED'}
 
+class MYADDON_OT_export_scene(bpy.types.Operator):
+     bl_idname = "myaddon.myaddon_ot_export_scene"
+     bl_label  = "シーン出力"
+     dl_description = "シーン情報をexportします"
+
+     def execute(self, context):
+         
+         print("シーン情報をExport")
+         for object in bpy.context.scene.objects:
+             print(object.type + "-" + object.name)
+
+             trans, rot, scale = object.matrix_local.decompose()
+
+             rot = rot.to_euler()
+
+             rot.x = math.degrees(rot.x)
+             rot.y = math.degrees(rot.y)
+             rot.z = math.degrees(rot.z)
+
+             print("Trans(%f,%f,%f)"%(trans.x,trans.y,trans.z))
+             print("Rot(%f,%f,%f)"%(rot.x,rot.y,rot.z))
+             print("Scale(%f,%f,%f)"%(scale.x,scale.y,scale.z))
+
+             if object.parent:
+                 print("Parent" + object.parent.name)
+             print()
+
+         print("シーン情報Export済")
+         self.report({'INFO'},"シーン情報をExport済")
+
+         return {'FINISHED'}
+         
+
 #
 class TOPBAR_MT_my_menu(bpy.types.Menu):
     #
@@ -63,6 +97,8 @@ class TOPBAR_MT_my_menu(bpy.types.Menu):
                              text = MYADDON_OT_stretch_vertex.bl_label)
         self.layout.operator(MYADDON_OT_create_ico_sphere.bl_idname,
                              text = MYADDON_OT_create_ico_sphere.bl_label)
+        self.layout.operator(MYADDON_OT_export_scene.bl_idname,
+                             text = MYADDON_OT_export_scene.bl_label)
         
     def submenu(self, context):
         self.layout.menu(TOPBAR_MT_my_menu.bl_idname)
@@ -70,6 +106,8 @@ class TOPBAR_MT_my_menu(bpy.types.Menu):
 classes = (
     MYADDON_OT_stretch_vertex,
     MYADDON_OT_create_ico_sphere,
+    MYADDON_OT_export_scene,
+
     TOPBAR_MT_my_menu,
 )
 
