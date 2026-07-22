@@ -1,6 +1,9 @@
 import bpy
 import math
 import bpy_extras
+import gpu
+import gpu_extras.batch
+import copy
 
 #
 
@@ -151,7 +154,77 @@ class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelp
         print("シーン情報Export済")
 
         return {'FINISHED'}
+    
+class DrawCollider:
+    #コライダー描画
+    handle = None
 
+    #3Dビューに登録する描画関数
+    def draw_collider():
+       #頂点データ
+       vertices = {"pos" : []}
+       #インデックスデータ
+       indices = []
+
+       # 各頂点のオブジェクト中心からのオフセット
+       offsets = [
+           [-0.5, -0.5, -0.5],
+           [+0.5, -0.5, -0.5],
+           [-0.5, +0.5, -0.5],
+           [+0.5, +0.5, -0.5],
+           [-0.5, -0.5, +0.5],
+           [+0.5, -0.5, +0.5],
+           [-0.5, +0.5, +0.5],
+           [+0.5, +0.5, +0.5],
+       ]
+
+       #立方体のX,Y,Zのサイズ
+       size =[2,2,2]
+
+       # 現在のシーンのオブジェクトリストを走査
+       for object in bpy.context.scene.objects:
+           #追加前の頂点数           
+           start = len(vertices["pos"])
+
+           # 各頂点の座標を計算して頂点リストに追加
+           for offset in offsets:
+               
+               pos = copy.copy(object.location) 
+               #中心点からオフセット分ずらす
+               pos[0]+=offset[0]*size[0]
+               pos[1]+=offset[1]*size[1]
+               pos[2]+=offset[2]*size[2]
+               #頂点データリストに座標を追加
+               vertices["pos"].append(pos)
+
+               # 前面のインデックス
+               indices.append([start + 0, start + 1])
+               indices.append([start + 3, start + 3])
+               indices.append([start + 0, start + 2])
+               indices.append([start + 1, start + 3])
+               # 奥面のインデックス
+               indices.append([start + 4, start + 5])
+               indices.append([start + 6, start + 7])
+               indices.append([start + 4, start + 6])
+               indices.append([start + 5, start + 7])
+               # 側面のインデックス
+               indices.append([start + 0, start + 4])
+               indices.append([start + 1, start + 5])
+               indices.append([start + 2, start + 6])
+               indices.append([start + 3, start + 7])
+
+       # ビルトインのシェーダを作成
+       shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+
+       #バッチを作成
+       batch = gpu_extras.batch.batch_for_shader(shader, 'LINES', vertices, indices=indices)
+
+       # シェーダのパラメータ設定
+       color = [0.5,1.0,1.0,1.0]
+       shader.bind()
+       shader.uniform_float("color", color)
+       # 描画
+       batch.draw(shader)
 
 #
 class TOPBAR_MT_my_menu(bpy.types.Menu):
@@ -191,8 +264,8 @@ def register():
         bpy.utils.register_class(cls)
 
     bpy .types.TOPBAR_MT_editor_menus.append(TOPBAR_MT_my_menu.submenu)
-       
-
+    #3Dビューに描画関数を登録
+    DrawCollider.handle = bpy.types.SpaceView3D.draw_handler_add(DrawCollider.draw_collider, (), 'WINDOW', 'POST_VIEW')
     print("レベルエディタ有効化")
 
 
@@ -203,6 +276,9 @@ def unregister():
         bpy.utils.unregister_class(cls)
 
         bpy .types.TOPBAR_MT_editor_menus.remove(TOPBAR_MT_my_menu.submenu)
+    #3Dビューから描画関数を削除
+    if DrawCollider.handle:
+        bpy.types.SpaceView3D.draw_handler_remove(DrawCollider.handle, 'WINDOW')
 
     print("レベルエディタ無効化")
 
