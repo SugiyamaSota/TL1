@@ -47,11 +47,16 @@ class OBJECT_PT_file_name(bpy.types.Panel):
     bl_region_type = 'WINDOW'
     bl_category = "object"
 
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None
+
     # サブメニューの描画
     def draw(self, context):
         self.layout.operator(MYADDON_OT_stretch_vertex.bl_idname,text = MYADDON_OT_stretch_vertex.bl_label)
         self.layout.operator(MYADDON_OT_create_ico_sphere.bl_idname,text = MYADDON_OT_create_ico_sphere.bl_label)
         self.layout.operator(MYADDON_OT_export_scene.bl_idname,text = MYADDON_OT_export_scene.bl_label)
+        self.layout.operator(MYADDON_OT_import_scene.bl_idname,text = MYADDON_OT_import_scene.bl_label)
 
         if "file_name" in context.object:
             self.layout.prop(context.object, '["file_name"]', text = self.bl_label)
@@ -65,6 +70,10 @@ class OBJECT_PT_collider(bpy.types.Panel):
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None
 
     # サブメニューの描画
     def draw(self, context):
@@ -281,7 +290,103 @@ class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelp
         print("シーン情報Export済")
 
         return {'FINISHED'}
-    
+
+class MYADDON_OT_import_scene(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
+    bl_idname = "myaddon.myaddon_ot_import_scene"
+    bl_label  = "シーン入力"
+    dl_description = "JSONファイルからシーン情報をロードします"
+     
+    # 読み込むファイルの拡張子
+    filename_ext = ".json" 
+
+    filter_glob: bpy.props.StringProperty(
+        default="*.json",
+        options={'HIDDEN'},
+        maxlen=255,
+    )
+
+    def create_object_from_json(self, obj_data, parent_obj=None):
+        name = obj_data.get("name", "ImportedObject")
+        obj_type = obj_data.get("type", "EMPTY")
+        
+        # オブジェクトの作成
+        if obj_type == 'MESH':
+            mesh_data = bpy.data.meshes.new(name)
+            # プレースホルダーとして立方体を作成
+            verts = [(-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (0.5, 0.5, -0.5), (-0.5, 0.5, -0.5),
+                     (-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, 0.5, 0.5)]
+            faces = [(0, 1, 2, 3), (4, 7, 6, 5), (0, 4, 5, 1), (1, 5, 6, 2), (2, 6, 7, 3), (4, 0, 3, 7)]
+            mesh_data.from_pydata(verts, [], faces)
+            mesh_data.update()
+            new_obj = bpy.data.objects.new(name, mesh_data)
+        elif obj_type == 'LIGHT':
+            light_data = bpy.data.lights.new(name, type='POINT')
+            new_obj = bpy.data.objects.new(name, light_data)
+        elif obj_type == 'CAMERA':
+            camera_data = bpy.data.cameras.new(name)
+            new_obj = bpy.data.objects.new(name, camera_data)
+        else:
+            new_obj = bpy.data.objects.new(name, None)
+            
+        # コレクションにリンク
+        bpy.context.collection.objects.link(new_obj)
+        
+        # 親子関係の設定
+        if parent_obj:
+            new_obj.parent = parent_obj
+            new_obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+            
+        # トランスフォームの適用
+        transform = obj_data.get("transform", {})
+        trans = mathutils.Vector(transform.get("translation", (0.0, 0.0, 0.0)))
+        rot_deg = transform.get("rotation", (0.0, 0.0, 0.0))
+        rot_rad = mathutils.Euler((
+            math.radians(rot_deg[0]),
+            math.radians(rot_deg[1]),
+            math.radians(rot_deg[2])
+        ))
+        scale = mathutils.Vector(transform.get("scale", (1.0, 1.0, 1.0)))
+        
+        # LocRotScale を用いて matrix_local を設定
+        new_obj.matrix_local = mathutils.Matrix.LocRotScale(trans, rot_rad, scale)
+        
+        # カスタムプロパティの復元
+        if "file_name" in obj_data:
+            new_obj["file_name"] = obj_data["file_name"]
+            
+        if "collider" in obj_data:
+            coll_data = obj_data["collider"]
+            new_obj["collider"] = coll_data.get("type", "BOX")
+            new_obj["collider_center"] = mathutils.Vector(coll_data.get("center", [0.0, 0.0, 0.0]))
+            new_obj["collider_size"] = mathutils.Vector(coll_data.get("size", [2.0, 2.0, 2.0]))
+            
+        # 子オブジェクトの再帰的作成
+        if "children" in obj_data:
+            for child_data in obj_data["children"]:
+                self.create_object_from_json(child_data, new_obj)
+                
+        return new_obj
+
+    def execute(self, context):
+        print("シーン情報入力開始... %r" % self.filepath)
+        
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as file:
+                json_text = file.read()
+                json_object_root = json.loads(json_text)
+                
+            objects_data = json_object_root.get("objects", [])
+            for obj_data in objects_data:
+                self.create_object_from_json(obj_data)
+                
+            self.report({'INFO'}, "シーン情報をImport済")
+            print("シーン情報Import済")
+            return {'FINISHED'}
+            
+        except Exception as e:
+            self.report({'ERROR'}, f"インポート失敗: {str(e)}")
+            return {'CANCELLED'}
+
 class DrawCollider:
     #コライダー描画
     handle = None
@@ -388,6 +493,8 @@ class TOPBAR_MT_my_menu(bpy.types.Menu):
                              text = MYADDON_OT_create_ico_sphere.bl_label)
         self.layout.operator(MYADDON_OT_export_scene.bl_idname,
                              text = MYADDON_OT_export_scene.bl_label)
+        self.layout.operator(MYADDON_OT_import_scene.bl_idname,
+                             text = MYADDON_OT_import_scene.bl_label)
         
     def submenu(self, context):
         self.layout.menu(TOPBAR_MT_my_menu.bl_idname)
@@ -396,6 +503,7 @@ classes = (
     MYADDON_OT_stretch_vertex,
     MYADDON_OT_create_ico_sphere,
     MYADDON_OT_export_scene,
+    MYADDON_OT_import_scene,
     TOPBAR_MT_my_menu,
     MYADDON_OT_add_filename,
     OBJECT_PT_file_name,
