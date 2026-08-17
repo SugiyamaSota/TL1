@@ -20,13 +20,25 @@ bl_info = {
     "category": "3D View",
 }
 
-SYSTEM_PROMPT = """You create CSV data.
-Return only valid CSV text.
-Do not use Markdown fences and do not add explanations.
-Quote fields correctly according to RFC 4180.
+SYSTEM_PROMPT = """You are an expert game level designer.
+Generate an exciting and playable 2D side-scrolling game map as a CSV grid of the requested size.
+
+[CRITICAL RULE: EXACT SIZE REQUIRED]
+- You MUST generate the EXACT size requested (width and height). Do not try to make it wider or taller.
+- If the requested size is 20 columns wide and 20 rows high, you must output EXACTLY 20 rows, and each row must contain EXACTLY 20 values (separated by exactly 19 commas).
+- Any deviation in columns or rows will CRASH the parser. Count columns and rows carefully.
+
+[CRITICAL RULE: PLAYABLE DESIGN]
+- Do NOT generate a mostly empty map. It must feel like a real game level.
+- You must build interesting features like a solid ground at the bottom (e.g., the bottom 1 or 2 rows should be filled with '1's), floating platforms/ledges ('1's) in the air, and place enemies ('E') on top of them.
+- Use '0' only for empty air spaces.
+
+[CRITICAL RULE: OUTPUT FORMAT]
+- You MUST output the CSV data inside a markdown code block starting with ```csv and ending with ```.
+- Do NOT include any explanations, raw talk, or preamble outside the code block.
 """
 
-RETRYABLE_HTTP_CODES = {500, 503, 504}
+RETRYABLE_HTTP_CODES = {500, 503, 504, 429}
 
 
 class APIRequestError(Exception):
@@ -65,7 +77,7 @@ class LevelEditorPreferences(bpy.types.AddonPreferences):
     )
     model: bpy.props.StringProperty(
         name="Model",
-        default="gemini-2.5-flash",
+        default="gemini-3.5-flash",
     )
 
     def draw(self, context):
@@ -131,10 +143,10 @@ def get_model(context, provider):
         if old_addon and old_addon.preferences and getattr(old_addon.preferences, "model", "").strip():
             model = old_addon.preferences.model.strip()
         else:
-            model = "gemini-2.5-flash"
+            model = "gemini-3.5-flash"
     
-    if provider == "GEMINI" and (model.startswith("gpt-") or model == "gemini-3.5-flash"):
-        model = "gemini-2.5-flash"
+    if provider == "GEMINI" and model.startswith("gpt-"):
+        model = "gemini-3.5-flash"
     elif provider == "OPENAI" and model.startswith("gemini-"):
         model = "gpt-4o-mini"
     return model
@@ -159,6 +171,14 @@ def clean_csv_response(text, width, height, empty_char="0"):
         if lines and lines[-1].strip() == "```":
             lines.pop()
         text = "\n".join(lines).strip()
+
+    # 2. カンマを一定数以上含む行のみをフィルタリングして残す（雑談や思考プロセスの行を除外）
+    min_commas = max(3, width // 2)
+    lines = text.splitlines()
+    csv_lines = [line.strip() for line in lines if line.count(",") >= min_commas]
+    
+    if csv_lines:
+        text = "\n".join(csv_lines)
 
     # CSVのパース
     rows = list(csv.reader(io.StringIO(text)))
@@ -214,7 +234,7 @@ def request_gemini_once(api_key, model, prompt):
         ],
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 4096,
+            "maxOutputTokens": 8192,
         },
     }
     request = urllib.request.Request(
@@ -226,7 +246,7 @@ def request_gemini_once(api_key, model, prompt):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=60) as response:
             result = json.loads(response.read().decode("utf-8"))
             parts = result["candidates"][0]["content"]["parts"]
             return "".join(part.get("text", "") for part in parts)
@@ -243,7 +263,7 @@ def request_openai_once(api_key, endpoint, model, prompt):
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,
-        "max_tokens": 4096,
+        "max_tokens": 8192,
     }
     request = urllib.request.Request(
         endpoint,
@@ -255,7 +275,7 @@ def request_openai_once(api_key, endpoint, model, prompt):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=60) as response:
             result = json.loads(response.read().decode("utf-8"))
             return result["choices"][0]["message"]["content"]
     except urllib.error.HTTPError as error:
@@ -282,9 +302,13 @@ def request_with_retry(provider, api_key, endpoint, model, prompt, update_status
                     raise
                 if attempt < 2:
                     wait_seconds = 2 ** (attempt + 1)
-                    update_status(
-                        f"APIが混雑中です。{wait_seconds}秒後に再試行します"
-                    )
+                    if error.code == 429:
+                        wait_seconds = 20
+                        update_status("クォータ制限(429)のため20秒待機して再試行します")
+                    else:
+                        update_status(
+                            f"APIが混雑中です。{wait_seconds}秒後に再試行します"
+                        )
                     time.sleep(wait_seconds)
 
         if len(models) > 1 and current_model != models[-1]:
